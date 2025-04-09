@@ -20,7 +20,7 @@
     do                            \
     {                             \
         perror(msg);              \
-        raise(SIGKILL);          \
+        raise(SIGKILL);           \
     } while (0)
 
 /**
@@ -31,48 +31,67 @@
  */
 size_t btok(size_t bytes)
 {
-    for (int i = SMALLEST_K; i < MAX_K; i++) {
-        int num_bytes = 1 << i;
-        if (bytes <= num_bytes) {
-            return (size_t) i;
+    for (int i = SMALLEST_K; i < MAX_K; i++)
+    {
+        int num_bytes = UINT64_C(1) << i;
+        if (bytes <= num_bytes)
+        {
+            return (size_t)i;
         }
     }
     return MAX_K; // Highest value possible for this assignment
 }
 
-
 struct avail *buddy_calc(struct buddy_pool *pool, struct avail *buddy)
 {
-    /**
-   * Find the buddy of a given pointer and kval relative to the base address we got from mmap
-   * @param pool The memory pool to work on (needed for the base addresses)
-   * @param buddy The memory block that we want to find the buddy for
-   * @return A pointer to the buddy
-   */
-
+    /** Buddy pointer math: 
+        p_base = 0x10000000
+        p_current_block = 0x1000F100
+        offset = p_current_block - p_base = 0x0000F100
+        offset_buddy = offset xor (1<<k) = 0x0000F000
+        buddy_pointer = base + offset_buddy = 0x1000F000
+     */
+    size_t buddy_size = UINT64_C(1) << buddy->kval; 
+    // Find the an offset to transition into a local frame
+    size_t offset = &buddy - (size_t)pool->base;
+    // Get the local offset of the buddy
+    size_t offset_buddy = offset ^ buddy_size;
+    // Get the buddy's address back into a global frame
+    struct avail *buddy_pointer = (struct avail*)((size_t)pool->base + offset_buddy);
+    return buddy_pointer;
 }
 
 void *buddy_malloc(struct buddy_pool *pool, size_t size)
 {
+    if (pool == NULL || size == 0) {
+        return NULL;
+    }
 
-    //get the kval for the requested size with enough room for the tag and kval fields
-    size_t requested_k = btok(size);
+    // get the kval for the requested size with enough room for the tag and kval fields
+    size_t requested_k = btok(size + UINT64_C(2) * sizeof(unsigned short int));
 
-    //R1 Find a block
+    // R1 Find a block
+    int index = UINT16_C(0);
+    while (pool->avail[index].tag != BLOCK_AVAIL && pool->avail[index].kval < requested_k && index < MAX_K - UINT64_C(1)) {
+        index++;
+    }
 
-    //There was not enough memory to satisfy the request thus we need to set error and return NULL
+    // There was not enough memory to satisfy the request thus we need to set error and return NULL
+    if (pool->avail[index].tag == BLOCK_RESERVED || pool->avail[index].kval < requested_k) {
+        errno = ENOMEM;
+        return 0;
+    }
 
-    //R2 Remove from list;
+    // R2 Remove from list;
+    // dll remove
 
-    //R3 Split required?
+    // R3 Split required?
 
-    //R4 Split the block
-
+    // R4 Split the block
 }
 
 void buddy_free(struct buddy_pool *pool, void *ptr)
 {
-
 }
 
 /**
@@ -85,8 +104,8 @@ void buddy_free(struct buddy_pool *pool, void *ptr)
  */
 void *buddy_realloc(struct buddy_pool *pool, void *ptr, size_t size)
 {
-    //Required for Grad Students
-    //Optional for Undergrad Students
+    // Required for Grad Students
+    // Optional for Undergrad Students
 }
 
 void buddy_init(struct buddy_pool *pool, size_t size)
@@ -102,27 +121,27 @@ void buddy_init(struct buddy_pool *pool, size_t size)
     if (kval > MAX_K)
         kval = MAX_K - 1;
 
-    //make sure pool struct is cleared out
-    memset(pool,0,sizeof(struct buddy_pool));
+    // make sure pool struct is cleared out
+    memset(pool, 0, sizeof(struct buddy_pool));
     pool->kval_m = kval;
     pool->numbytes = (UINT64_C(1) << pool->kval_m);
-    //Memory map a block of raw memory to manage
+    // Memory map a block of raw memory to manage
     pool->base = mmap(
-        NULL,                               /*addr to map to*/
-        pool->numbytes,                     /*length*/
-        PROT_READ | PROT_WRITE,             /*prot*/
-        MAP_PRIVATE | MAP_ANONYMOUS,        /*flags*/
-        -1,                                 /*fd -1 when using MAP_ANONYMOUS*/
-        0                                   /* offset 0 when using MAP_ANONYMOUS*/
+        NULL,                        /*addr to map to*/
+        pool->numbytes,              /*length*/
+        PROT_READ | PROT_WRITE,      /*prot*/
+        MAP_PRIVATE | MAP_ANONYMOUS, /*flags*/
+        -1,                          /*fd -1 when using MAP_ANONYMOUS*/
+        0                            /* offset 0 when using MAP_ANONYMOUS*/
     );
     if (MAP_FAILED == pool->base)
     {
         handle_error_and_die("buddy_init avail array mmap failed");
     }
 
-    //Set all blocks to empty. We are using circular lists so the first elements just point
-    //to an available block. Thus the tag, and kval feild are unused burning a small bit of
-    //memory but making the code more readable. We mark these blocks as UNUSED to aid in debugging.
+    // Set all blocks to empty. We are using circular lists so the first elements just point
+    // to an available block. Thus the tag, and kval feild are unused burning a small bit of
+    // memory but making the code more readable. We mark these blocks as UNUSED to aid in debugging.
     for (size_t i = 0; i <= kval; i++)
     {
         pool->avail[i].next = pool->avail[i].prev = &pool->avail[i];
@@ -130,7 +149,7 @@ void buddy_init(struct buddy_pool *pool, size_t size)
         pool->avail[i].tag = BLOCK_UNUSED;
     }
 
-    //Add in the first block
+    // Add in the first block
     pool->avail[kval].next = pool->avail[kval].prev = (struct avail *)pool->base;
     struct avail *m = pool->avail[kval].next;
     m->tag = BLOCK_AVAIL;
@@ -145,8 +164,8 @@ void buddy_destroy(struct buddy_pool *pool)
     {
         handle_error_and_die("buddy_destroy avail array");
     }
-    //Zero out the array so it can be reused it needed
-    memset(pool,0,sizeof(struct buddy_pool));
+    // Zero out the array so it can be reused it needed
+    memset(pool, 0, sizeof(struct buddy_pool));
 }
 
 #define UNUSED(x) (void)x
@@ -157,18 +176,18 @@ void buddy_destroy(struct buddy_pool *pool)
  */
 static void printb(unsigned long int b)
 {
-     size_t bits = sizeof(b) * 8;
-     unsigned long int curr = UINT64_C(1) << (bits - 1);
-     for (size_t i = 0; i < bits; i++)
-     {
-          if (b & curr)
-          {
-               printf("1");
-          }
-          else
-          {
-               printf("0");
-          }
-          curr >>= 1L;
-     }
+    size_t bits = sizeof(b) * 8;
+    unsigned long int curr = UINT64_C(1) << (bits - 1);
+    for (size_t i = 0; i < bits; i++)
+    {
+        if (b & curr)
+        {
+            printf("1");
+        }
+        else
+        {
+            printf("0");
+        }
+        curr >>= 1L;
+    }
 }
